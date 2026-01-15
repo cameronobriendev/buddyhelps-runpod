@@ -75,12 +75,23 @@ def synthesize(
 
     start = time.perf_counter()
 
-    # Generate audio
-    audio, sample_rate = _pipeline(text, voice=voice, speed=speed)
+    # Kokoro returns a generator yielding (graphemes, phonemes, audio) tuples
+    # Collect all audio chunks and concatenate
+    audio_chunks = []
+    sample_rate = 24000  # Kokoro default sample rate
 
-    # Convert to numpy if needed
-    if hasattr(audio, 'numpy'):
-        audio = audio.numpy()
+    for graphemes, phonemes, audio_chunk in _pipeline(text, voice=voice, speed=speed):
+        if audio_chunk is not None:
+            # Convert to numpy if needed
+            if hasattr(audio_chunk, 'numpy'):
+                audio_chunk = audio_chunk.numpy()
+            audio_chunks.append(audio_chunk)
+
+    # Concatenate all chunks
+    if audio_chunks:
+        audio = np.concatenate(audio_chunks)
+    else:
+        audio = np.array([], dtype=np.float32)
 
     elapsed = (time.perf_counter() - start) * 1000
     logger.debug(f"TTS completed in {elapsed:.1f}ms for {len(text)} chars")
