@@ -6,8 +6,8 @@ torch>=2.1.0
 torchvision
 torchaudio
 
-# CUDA (PINNED VERSION - DO NOT CHANGE)
-cuda-python==12.6.2
+# CUDA - let vllm pick compatible version
+# Note: cuda-python 12.6.2 was ideal for Parakeet but conflicts with vllm deps
 
 # STT - Parakeet (NVIDIA NeMo)
 nemo_toolkit[asr]>=1.23.0
@@ -16,8 +16,8 @@ nemo_toolkit[asr]>=1.23.0
 kokoro>=0.9.4
 soundfile
 
-# LLM - Qwen with vLLM
-vllm>=0.4.0
+# LLM - Qwen with vLLM (pinned to avoid cutlass dependency conflict)
+vllm==0.4.0
 transformers>=4.40.0
 
 # Server
