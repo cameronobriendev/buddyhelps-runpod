@@ -13,7 +13,8 @@ from fastapi.responses import Response, JSONResponse
 from pydantic import BaseModel
 
 from .config import settings
-from . import stt, llm, tts
+from . import stt, llm, tts, database as db
+from .admin import router as admin_router
 
 # Configure logging
 logging.basicConfig(
@@ -27,6 +28,10 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Load models on startup."""
     logger.info("Starting BuddyHelps Voice Server...")
+
+    # Initialize database
+    logger.info("Initializing database...")
+    db.init_db()
 
     # Load all models
     logger.info("Loading STT model...")
@@ -51,6 +56,9 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# Include admin routes
+app.include_router(admin_router)
 
 
 # Request/Response Models
