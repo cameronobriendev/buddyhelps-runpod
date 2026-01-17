@@ -54,6 +54,14 @@ sleep 3
 echo "Starting server..."
 source /workspace/venv/bin/activate
 cd /workspace/buddyhelps-runpod
+
+# Load environment variables from .env
+if [ -f .env ]; then
+    set -a
+    source .env
+    set +a
+fi
+
 PORT=8888 nohup python -m src.main > server.log 2>&1 &
 
 echo "Server started. PID: $!"
