@@ -137,7 +137,7 @@ async def health_check():
         status="healthy",
         models_loaded=True,
         stt_ready=stt_ready,
-        llm_ready=llm._llm is not None,
+        llm_ready=llm._model is not None,
         tts_ready=tts._pipeline is not None,
         active_calls=call_manager.get_active_count(),
     )

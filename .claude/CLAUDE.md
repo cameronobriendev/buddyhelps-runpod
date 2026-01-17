@@ -37,9 +37,14 @@ Self-hosted voice AI inference server for BuddyHelps. Runs on RunPod GPU cloud.
 | Component | Model | Latency | VRAM | Concurrency |
 |-----------|-------|---------|------|-------------|
 | STT | 4x faster-whisper (base) | ~150-180ms | ~2.8GB | **4 concurrent** |
-| LLM | Qwen2.5-0.5B-Instruct (vLLM) | 15-30ms | ~1.2GB | 100+ (batched) |
+| LLM | Qwen2.5-0.5B-Instruct (Transformers) | 50-80ms | ~1.2GB | sequential |
 | TTS | Kokoro-82M | ~100ms | ~2.5GB | 1 |
-| **Total** | | **~280ms** | **~7.5GB** | **4 calls** |
+| **Total** | | **~330ms** | **~7.5GB** | **4 calls** |
+
+**Why Transformers instead of vLLM?**
+vLLM 0.13.0's v1 engine spawns child processes that fail CUDA initialization on RunPod.
+For a 0.5B model, Transformers is plenty fast and runs single-process. The ~50ms latency
+increase is negligible for phone conversations.
 
 **STT Backend Options:**
 - `whisper` (default) - 4x faster-whisper instances, 4x concurrency, MIT licensed
@@ -93,9 +98,9 @@ RunPod's CUDA driver is 12.4. NeMo/Parakeet wants 12.6+ for CUDA graphs.
 - Still functional, just slightly slower
 
 ### 5. Pip Dependencies Are Fragile
-vllm, NeMo, torch versions must match. Current working combo:
+NeMo and torch versions must match. Current working combo:
 - torch 2.9.0
-- vllm 0.13.0
+- transformers (latest)
 - nemo_toolkit 2.6.1
 - numpy 1.26.4 (NOT 2.x - breaks NeMo)
 
@@ -146,17 +151,6 @@ pip install 'torch>=2.5.0' --upgrade
 
 Also requires `numpy<2` (NeMo compiled against NumPy 1.x).
 
-### 11. vLLM GPU Memory Profiling Errors
-vLLM profiles GPU memory during init. If memory changes (other processes releasing), it fails with:
-```
-AssertionError: Error in memory profiling. Initial free memory X GiB, current free memory Y GiB
-```
-
-**Solutions:**
-- Use `scripts/restart.sh` which does proper GPU cleanup before starting
-- vLLM configured with `enforce_eager=True` to disable CUDA graphs (more stable restarts)
-- Never use `pkill -9` directly - use graceful shutdown (SIGTERM first)
-
 ## API Endpoints
 
 | Endpoint | Method | Description |
@@ -198,35 +192,49 @@ chmod +x /tmp/check.sh && /tmp/check.sh
 See `docs/BUILD_PLAN.md` for comprehensive list with priorities and build order.
 
 **Summary:**
-- 🔴 **Core:** Twilio WebSocket handler, audio conversion, webhook handlers
-- 🟡 **Post-call:** /extract endpoint, notifications to dashboard
-- 🟠 **Scale:** Pod assignment, health monitoring
+- ✅ **Phase 1 Complete:** Twilio WebSocket handler, audio conversion, webhook handlers, call state
+- 🟡 **Phase 2:** /extract endpoint, notifications to dashboard
+- 🟠 **Future:** Pod assignment (SaaS feature), health monitoring
 
 ## Files
 
+**Core Pipeline:**
 - `src/stt_whisper.py` - Multi-instance faster-whisper pool (4x concurrency)
 - `src/stt.py` - Parakeet STT wrapper (legacy/fallback)
 - `src/stt_corrections.py` - Keyword corrections for STT output
-- `src/llm.py` - Qwen LLM wrapper with vLLM
+- `src/llm.py` - Qwen LLM wrapper with HuggingFace Transformers
 - `src/tts.py` - Kokoro TTS wrapper (handles generator API)
-- `src/main.py` - FastAPI server with conditional STT loading
+
+**Twilio Integration (Phase 1):**
+- `src/twilio_ws.py` - WebSocket handler for Twilio Media Streams
+- `src/twilio_handlers.py` - HTTP webhooks (/incoming-call, /call-status)
+- `src/audio_utils.py` - mulaw/PCM conversion, VAD, AudioBuffer
+- `src/call_state.py` - CallState tracking, CallStateManager
+
+**Server & Config:**
+- `src/main.py` - FastAPI server with WebSocket endpoint
 - `src/database.py` - SQLite database (phone numbers, prompts, keywords)
 - `src/admin.py` - Admin routes + tabbed HTML UI
 - `src/config.py` - Pydantic settings (STT backend selection)
+
+**Scripts & Docs:**
 - `scripts/restart.sh` - Graceful restart with GPU cleanup
 - `prompts/conversation.txt` - Benny's conversation prompt
-- `.env` - Credentials (Twilio, SignalWire, RunPod)
+- `.env` - Credentials (Twilio, RunPod)
+- `docs/BUILD_PLAN.md` - Comprehensive build roadmap
 - `docs/CONCURRENCY_ANALYSIS.md` - Capacity analysis for plumber clients
 
 ## Capacity (January 2026)
 
-With 4x faster-whisper instances:
-- **40-60 solo plumbers** (vs 10-20 before)
-- **15-25 small businesses** (vs 5-10 before)
-- **Cost per client: $2-4/month** (vs $9-14 before)
+With 4x faster-whisper instances and Transformers LLM (~330ms pipeline):
+- **35-55 solo plumbers**
+- **12-22 small businesses**
+- **Cost per client: $2-4/month**
+
+Bottleneck is STT concurrency (4 instances), not LLM speed.
 
 See `docs/CONCURRENCY_ANALYSIS.md` for full analysis.
 
 ---
 
-*Last Updated: January 16, 2026*
+*Last Updated: January 17, 2026*

@@ -1,12 +1,16 @@
 # BuddyHelps Voice AI Server
-# RunPod RTX A5000 deployment
+# RunPod RTX A4000 deployment
 
-FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
+FROM runpod/pytorch:2.2.0-py3.10-cuda12.1.1-devel-ubuntu22.04
+
+# Prevent interactive prompts during build
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
 
 WORKDIR /app
 
 # Install system dependencies
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     ffmpeg \
     libsndfile1 \
