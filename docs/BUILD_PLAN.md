@@ -1,6 +1,6 @@
 # BuddyHelps - Comprehensive Build Plan
 
-**Last Updated:** January 16, 2026
+**Last Updated:** January 17, 2026
 
 This document tracks everything that needs to be built to complete the BuddyHelps voice AI system.
 
@@ -25,14 +25,18 @@ BuddyHelps consists of two main projects:
 
 | Component | Status | Details |
 |-----------|--------|---------|
-| STT (Speech-to-Text) | ✅ Live | 4x faster-whisper pool, 150-180ms, 4 concurrent |
-| LLM (Language Model) | ✅ Live | Qwen 0.5B via vLLM, 15-30ms |
+| STT (Speech-to-Text) | ✅ Live | 8x faster-whisper pool, 150-180ms, 8 concurrent |
+| LLM (Language Model) | ✅ Live | Qwen 0.5B via Transformers, 50-80ms |
 | TTS (Text-to-Speech) | ✅ Live | Kokoro-82M, ~100ms |
-| /pipeline endpoint | ✅ Live | Full STT→LLM→TTS in ~280ms |
+| /pipeline endpoint | ✅ Live | Full STT→LLM→TTS in ~330ms |
 | Admin UI | ✅ Live | 3 tabs: Numbers, Prompts, Keywords |
 | SQLite database | ✅ Live | Phone configs, prompts, corrections |
 | Keyword corrections | ✅ Live | Post-STT fixes (quogged→clogged) |
 | Demo vs Live prompts | ✅ Live | is_demo flag for testing |
+| Twilio WebSocket handler | ✅ Live | Real-time bidirectional audio via /ws/twilio |
+| Audio format conversion | ✅ Live | 8kHz mulaw ↔ 16kHz PCM, VAD |
+| Twilio webhook handlers | ✅ Live | /twilio/incoming-call, /twilio/call-status |
+| Call state management | ✅ Live | Track active calls, conversation history |
 
 ### Dashboard (Vercel)
 
@@ -52,103 +56,13 @@ BuddyHelps consists of two main projects:
 
 ## What's NOT Built Yet
 
-### Priority 1: Core (Make Calls Work)
+### ~~Priority 1: Core (Make Calls Work)~~ ✅ COMPLETE
 
-These are required for the system to handle real phone calls.
-
-#### 1.1 Twilio WebSocket Handler
-**Project:** buddyhelps-runpod
-**File:** `src/twilio_ws.py` (new)
-**Priority:** 🔴 Critical
-
-Receives real-time audio stream from Twilio via WebSocket.
-
-```python
-# What it needs to do:
-# 1. Accept WebSocket connection from Twilio
-# 2. Receive audio chunks (base64 encoded, 8kHz mulaw)
-# 3. Buffer audio until speech pause detected
-# 4. Send to STT → LLM → TTS pipeline
-# 5. Stream TTS audio back to Twilio
-# 6. Handle call events (start, end, DTMF)
-```
-
-**Twilio Media Streams docs:** https://www.twilio.com/docs/voice/media-streams
-
-**Key considerations:**
-- Audio format: 8kHz mulaw (need to convert to 16kHz PCM for whisper)
-- Bidirectional: receive customer audio, send AI audio
-- Handle interruptions (barge-in)
-- Track conversation state per call
-
----
-
-#### 1.2 Audio Format Conversion
-**Project:** buddyhelps-runpod
-**File:** `src/audio_utils.py` (new)
-**Priority:** 🔴 Critical
-
-Convert between Twilio's format and what our models expect.
-
-```python
-def mulaw_to_pcm(mulaw_bytes: bytes) -> bytes:
-    """Convert 8kHz mulaw to 16kHz PCM for whisper."""
-    pass
-
-def pcm_to_mulaw(pcm_bytes: bytes) -> bytes:
-    """Convert 16kHz PCM from TTS to 8kHz mulaw for Twilio."""
-    pass
-```
-
-**Libraries:**
-- `audioop` (Python stdlib) for mulaw conversion
-- `scipy.signal.resample` for sample rate conversion
-
----
-
-#### 1.3 Twilio Webhook Handlers
-**Project:** buddyhelps-runpod
-**File:** `src/twilio_handlers.py` (new)
-**Priority:** 🔴 Critical
-
-HTTP endpoints Twilio calls when events happen.
-
-| Endpoint | Purpose |
-|----------|---------|
-| `POST /incoming-call` | Called when someone dials. Returns TwiML to start Media Stream. |
-| `POST /call-status` | Called when call status changes (ringing, answered, completed). |
-
-**TwiML for Media Streams:**
-```xml
-<Response>
-  <Connect>
-    <Stream url="wss://your-runpod-url/ws/twilio" />
-  </Connect>
-</Response>
-```
-
----
-
-#### 1.4 Call State Management
-**Project:** buddyhelps-runpod
-**File:** `src/call_state.py` (new)
-**Priority:** 🔴 Critical
-
-Track active calls and their conversation state.
-
-```python
-class CallState:
-    call_sid: str
-    phone_number: str  # Twilio number that received call
-    caller_number: str
-    business_config: dict  # From database lookup
-    conversation_history: List[dict]  # Messages for LLM context
-    transcript: List[dict]  # Full transcript with timestamps
-    started_at: datetime
-
-# In-memory dict of active calls
-active_calls: Dict[str, CallState] = {}
-```
+Phase 1 is complete. All Twilio call handling components are built:
+- `src/twilio_ws.py` - WebSocket handler
+- `src/audio_utils.py` - Audio format conversion
+- `src/twilio_handlers.py` - Webhook handlers
+- `src/call_state.py` - Call state management
 
 ---
 
@@ -248,6 +162,48 @@ CREATE TABLE call_logs (
 
 ---
 
+#### 2.4 API Security
+**Project:** buddyhelps-runpod
+**File:** `src/security.py` (new) + middleware
+**Priority:** 🟡 High (before public launch)
+
+Protect endpoints from unauthorized access.
+
+**Current exposure:** Anyone with the pod URL can use `/stt`, `/llm`, `/tts`, `/admin`.
+
+**Implementation:**
+
+| Endpoint | Protection |
+|----------|------------|
+| `/twilio/*` | Twilio signature validation (X-Twilio-Signature header) |
+| `/admin`, `/api/*` | API key required (X-API-Key header) |
+| `/stt`, `/llm`, `/tts`, `/pipeline` | API key required |
+| `/health` | Public (no sensitive data) |
+
+```python
+# src/security.py
+from twilio.request_validator import RequestValidator
+
+def verify_twilio_signature(request, auth_token):
+    """Verify request actually came from Twilio."""
+    validator = RequestValidator(auth_token)
+    signature = request.headers.get("X-Twilio-Signature", "")
+    url = str(request.url)
+    params = await request.form()
+    return validator.validate(url, params, signature)
+
+def verify_api_key(request, api_key):
+    """Check X-API-Key header."""
+    return request.headers.get("X-API-Key") == api_key
+```
+
+**Environment variables needed:**
+```bash
+API_KEY=...  # Generate with: openssl rand -hex 32
+```
+
+---
+
 ### Priority 3: Scale & Monitoring
 
 #### 3.1 Health Monitoring
@@ -331,16 +287,17 @@ Store audio recordings (requires Twilio recording + storage).
 ## Build Order (Recommended)
 
 ```
-Phase 1: Make Calls Work
-├── 1.1 Twilio WebSocket handler
-├── 1.2 Audio format conversion
-├── 1.3 Twilio webhook handlers
-└── 1.4 Call state management
+Phase 1: Make Calls Work ✅ COMPLETE
+├── 1.1 Twilio WebSocket handler ✅
+├── 1.2 Audio format conversion ✅
+├── 1.3 Twilio webhook handlers ✅
+└── 1.4 Call state management ✅
 
-Phase 2: Post-Call Processing
+Phase 2: Post-Call Processing + Security
 ├── 2.1 Post-call webhook to dashboard
 ├── 2.2 /extract endpoint (+ inline function)
-└── 2.3 Call logging table
+├── 2.3 Call logging table
+└── 2.4 API Security (before public launch)
 
 Phase 3: Test End-to-End
 ├── Test with Cameron's number (+18255563359)
@@ -359,12 +316,14 @@ Phase 5: SaaS (when ready to scale)
 
 ## Testing Checklist
 
-### Phase 1 Complete When:
+### Phase 1 Complete When: ✅ CODE COMPLETE
 - [ ] Can dial Twilio number
 - [ ] AI answers and speaks greeting
 - [ ] AI hears customer and responds
 - [ ] Conversation flows naturally
 - [ ] Call ends cleanly
+
+*Code is built. Needs end-to-end testing with real Twilio number.*
 
 ### Phase 2 Complete When:
 - [ ] Plumber receives SMS after call
