@@ -21,7 +21,7 @@ class Settings(BaseSettings):
 
     # Whisper Pool Settings (when stt_backend="whisper")
     whisper_model_size: str = "base"  # tiny, base, small
-    whisper_num_instances: int = 4  # Number of concurrent instances
+    whisper_num_instances: int = 8  # Number of concurrent instances
     whisper_compute_type: str = "float16"  # float16, int8_float16, int8
     whisper_device: str = "cuda"
 

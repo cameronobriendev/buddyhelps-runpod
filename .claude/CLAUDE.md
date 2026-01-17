@@ -36,10 +36,10 @@ Self-hosted voice AI inference server for BuddyHelps. Runs on RunPod GPU cloud.
 
 | Component | Model | Latency | VRAM | Concurrency |
 |-----------|-------|---------|------|-------------|
-| STT | 4x faster-whisper (base) | ~150-180ms | ~2.8GB | **4 concurrent** |
+| STT | 8x faster-whisper (base) | ~150-180ms | ~5.6GB | **8 concurrent** |
 | LLM | Qwen2.5-0.5B-Instruct (Transformers) | 50-80ms | ~1.2GB | sequential |
 | TTS | Kokoro-82M | ~100ms | ~2.5GB | 1 |
-| **Total** | | **~330ms** | **~7.5GB** | **4 calls** |
+| **Total** | | **~330ms** | **~9.3GB** | **8 calls** |
 
 **Why Transformers instead of vLLM?**
 vLLM 0.13.0's v1 engine spawns child processes that fail CUDA initialization on RunPod.
@@ -226,12 +226,12 @@ See `docs/BUILD_PLAN.md` for comprehensive list with priorities and build order.
 
 ## Capacity (January 2026)
 
-With 4x faster-whisper instances and Transformers LLM (~330ms pipeline):
-- **35-55 solo plumbers**
-- **12-22 small businesses**
-- **Cost per client: $2-4/month**
+With 8x faster-whisper instances and Transformers LLM (~330ms pipeline):
+- **70-110 solo plumbers**
+- **25-40 small businesses**
+- **Cost per client: $1-2/month**
 
-Bottleneck is STT concurrency (4 instances), not LLM speed.
+Bottleneck is STT concurrency (8 instances), not LLM speed.
 
 See `docs/CONCURRENCY_ANALYSIS.md` for full analysis.
 
