@@ -1,20 +1,30 @@
 """
 BuddyHelps Voice Server - FastAPI Application
 
-Endpoints for STT, LLM, TTS, and full pipeline processing.
+Endpoints for STT, LLM, TTS, full pipeline processing, and Twilio call handling.
 """
 import logging
 import time
 from typing import List, Dict, Optional
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Query
+from fastapi import FastAPI, HTTPException, UploadFile, File, Query, WebSocket
 from fastapi.responses import Response, JSONResponse
 from pydantic import BaseModel
 
 from .config import settings
-from . import stt, llm, tts, database as db
+from . import llm, tts, database as db
 from .admin import router as admin_router
+from .stt_corrections import apply_corrections
+from .twilio_handlers import router as twilio_router
+from .twilio_ws import handle_twilio_websocket
+from .call_state import call_manager
+
+# Conditional STT import based on backend setting
+if settings.stt_backend == "whisper":
+    from . import stt_whisper as stt
+else:
+    from . import stt
 
 # Configure logging
 logging.basicConfig(
@@ -33,9 +43,18 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing database...")
     db.init_db()
 
-    # Load all models
-    logger.info("Loading STT model...")
-    stt.load_model(settings.stt_model)
+    # Load STT based on backend setting
+    if settings.stt_backend == "whisper":
+        logger.info(f"Loading STT (faster-whisper pool: {settings.whisper_num_instances}x {settings.whisper_model_size})...")
+        stt.load_model(
+            model_size=settings.whisper_model_size,
+            num_instances=settings.whisper_num_instances,
+            device=settings.whisper_device,
+            compute_type=settings.whisper_compute_type,
+        )
+    else:
+        logger.info("Loading STT model (Parakeet)...")
+        stt.load_model(settings.stt_model)
     stt.warmup()
 
     logger.info("Loading LLM model...")
@@ -57,8 +76,16 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Include admin routes
+# Include routers
 app.include_router(admin_router)
+app.include_router(twilio_router)
+
+
+# WebSocket endpoint for Twilio Media Streams
+@app.websocket("/ws/twilio")
+async def twilio_websocket(websocket: WebSocket):
+    """Handle Twilio Media Stream WebSocket connections."""
+    await handle_twilio_websocket(websocket)
 
 
 # Request/Response Models
@@ -93,19 +120,35 @@ class HealthResponse(BaseModel):
     stt_ready: bool
     llm_ready: bool
     tts_ready: bool
+    active_calls: int
 
 
 # Endpoints
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     """Check server health and model status."""
+    # Check STT ready based on backend
+    if settings.stt_backend == "whisper":
+        stt_ready = stt._pool is not None
+    else:
+        stt_ready = stt._model is not None
+
     return HealthResponse(
         status="healthy",
         models_loaded=True,
-        stt_ready=stt._model is not None,
+        stt_ready=stt_ready,
         llm_ready=llm._llm is not None,
         tts_ready=tts._pipeline is not None,
+        active_calls=call_manager.get_active_count(),
     )
+
+
+@app.get("/stt/stats")
+async def stt_stats():
+    """Get STT pool statistics (whisper backend only)."""
+    if settings.stt_backend == "whisper":
+        return stt.get_stats()
+    return {"backend": "parakeet", "message": "Stats not available for Parakeet"}
 
 
 @app.post("/stt")
@@ -198,14 +241,17 @@ async def full_pipeline(
     business_name: str = Query(...),
     owner_name: str = Query(...),
     conversation_history: str = Query(default="[]"),
+    phone_number: str = Query(default=None),
 ):
     """
-    Full voice pipeline: STT -> LLM -> TTS
+    Full voice pipeline: STT -> Keyword Corrections -> LLM -> TTS
 
     1. Transcribe incoming audio
-    2. Generate response with LLM
-    3. Synthesize response to speech
+    2. Apply keyword corrections (if phone_number provided)
+    3. Generate response with LLM
+    4. Synthesize response to speech
 
+    If phone_number is provided, uses the configured system_prompt and keyword_corrections.
     Returns WAV audio of the response.
     """
     import json
@@ -216,11 +262,31 @@ async def full_pipeline(
         # Parse conversation history
         history = json.loads(conversation_history)
 
+        # Look up config if phone number provided
+        config = None
+        keyword_corrections = {}
+        system_prompt = None
+        greeting_name = "Benny"
+
+        if phone_number:
+            config = db.get_config_for_call(phone_number)
+            if config:
+                keyword_corrections = config.get('keyword_corrections', {})
+                system_prompt = config.get('system_prompt') or None
+                greeting_name = config.get('greeting_name', greeting_name)
+                # Use config values if not overridden
+                if not business_name:
+                    business_name = config.get('business_name', business_name)
+
         # STT
         stt_start = time.perf_counter()
         audio_bytes = await file.read()
-        user_text = stt.transcribe_bytes(audio_bytes)
+        user_text_raw = stt.transcribe_bytes(audio_bytes)
         stt_ms = (time.perf_counter() - stt_start) * 1000
+
+        # Apply keyword corrections
+        user_text = apply_corrections(user_text_raw, keyword_corrections)
+        corrections_applied = user_text != user_text_raw
 
         # Add user message to history
         history.append({"role": "user", "content": user_text})
@@ -231,6 +297,8 @@ async def full_pipeline(
             messages=history,
             business_name=business_name,
             owner_name=owner_name,
+            greeting_name=greeting_name,
+            system_prompt=system_prompt,
         )
         llm_ms = (time.perf_counter() - llm_start) * 1000
 
@@ -245,7 +313,9 @@ async def full_pipeline(
             content=response_audio,
             media_type="audio/wav",
             headers={
+                "X-User-Text-Raw": user_text_raw[:100],
                 "X-User-Text": user_text[:100],
+                "X-Corrections-Applied": str(corrections_applied),
                 "X-Response-Text": response_text[:100],
                 "X-STT-Ms": str(round(stt_ms, 2)),
                 "X-LLM-Ms": str(round(llm_ms, 2)),
